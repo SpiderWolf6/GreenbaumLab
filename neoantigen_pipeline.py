@@ -20,7 +20,7 @@ tree_directory = args.tree_dir
 
 patient_summary = pd.DataFrame(columns=['Patient', 'Sample'], index=[])
 mutation_summary = pd.DataFrame()
-print(patient_summary.shape[0])
+clone_summary = pd.DataFrame()
 
 vcf_dict = {}
 neoantigen_dict = {}
@@ -28,6 +28,7 @@ tree_dict = {}
 
 def traverse_tree(tree, sample):
     global mutation_summary
+    global clone_summary
     vcf_data = None
     neoantigen_data = None
     for key in vcf_dict:
@@ -43,11 +44,22 @@ def traverse_tree(tree, sample):
         all_parents.clear()
         item = stack.pop()
 
+        missense_counter = 0
+        frameshift_counter = 0
+        mutations_counter = 0
+
         for m in item["clone_mutations"]:
+            mutations_counter += 1
             mut_type = (vcf_data.loc[vcf_data.index[vcf_data['ID'] == m], 'ANN'].iloc[0])[0]
             start = mut_type.find("|") + 1
             end = mut_type[start:].find("|") + start
             mut_type = mut_type[start:end]
+
+            if mut_type.startswith("missense"):
+                missense_counter += 1
+            if mut_type.startswith("frameshift"):
+                frameshift_counter += 1
+
             sub_df = neoantigen_data[neoantigen_data['neoantigen'].str.startswith(m)]
             if len(sub_df) > 0:
                 binders = len(sub_df)
@@ -66,6 +78,14 @@ def traverse_tree(tree, sample):
                                              "mutation_type": mut_type, "gene": None, "n_neoantigen_binders": 0,
                                              "best_kDmt": 0})],
                                              ignore_index=True)
+
+        clone_summary = pd.concat([clone_summary, pd.DataFrame({"Sample": [sample], "Clone_ID": [item['clone_id']],
+                                                                "CCF_X": item['X'], "marginalCCF_x": item['x'],
+                                                                "n_mutations": mutations_counter,
+                                                                "n_missense": missense_counter,
+                                                                "n_frameshift": frameshift_counter,
+                                                                "parent_clone_id": None, "all_parent_clones": None})],
+                                                                ignore_index=True)
 
         if 'children' in item:
             stack.extend(reversed(item['children']))

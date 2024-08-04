@@ -1,34 +1,57 @@
-import io, os
-import pandas as pd
-import vcf, vcf.parser
+import io
+import os
 import sys
-import requests, json, argparse
+import pandas as pd
+import vcf
+import vcf.parser
+import argparse
+import requests
+import json
 
+# initialize user input parser and arguments
 parser = argparse.ArgumentParser(description='Foo')
 parser.add_argument('--vcf_dir', metavar='vcf_dir', type=str, required=True)
 parser.add_argument('--vcf_suff', metavar='vcf_suff', type=str, required=True)
 parser.add_argument('--tree_dir', metavar='tree_dir', type=str, required=True)
-parser.add_argument('--na_dir', metavar='na_dir', type=str, required=True)
+parser.add_argument('--neoag_dir', metavar='neoag_dir', type=str, required=True)
 parser.add_argument('--patient', metavar='patient', type=str, required=False)
 args = parser.parse_args()
 
+# convert arguments into global variables
 vcf_directory = args.vcf_dir
 patient = args.patient
 vcf_suffix = args.vcf_suff
-neoant_directory = args.na_dir
+neoant_directory = args.neoag_dir
 tree_directory = args.tree_dir
 
+# create patient, mutation, and clone summary dataframes
 patient_summary = pd.DataFrame(columns=['Patient', 'Sample'], index=[])
 mutation_summary = pd.DataFrame()
 clone_summary = pd.DataFrame()
 
+# create vcf, neoantigen, and tree dictionaries to organize individual datasets
 vcf_dict = {}
 neoantigen_dict = {}
 tree_dict = {}
 
+
+# returns the path from root node to target node
+def get_all_parents(json_tree, target_id):
+    for element in json_tree:
+        if 'clone_id' in element:
+            if element['clone_id'] == target_id:
+                return [element['clone_id']]
+            else:
+                if 'children' in element:
+                    check_child = get_all_parents(element['children'], target_id)
+                    if check_child:
+                        return [element['clone_id']] + check_child
+
+
+# traverse sample's phylogeny tree to collect mutation-specific and clone-specific data
+# add data to mutation and clone summary files
 def traverse_tree(tree, sample):
-    global mutation_summary
-    global clone_summary
+    global mutation_summary, clone_summary
     vcf_data = None
     neoantigen_data = None
     for key in vcf_dict:
@@ -37,12 +60,10 @@ def traverse_tree(tree, sample):
             neoantigen_data = neoantigen_dict[key]
 
     stack = tree['children'][:]
-    parents = []
-    all_parents = []
     while stack:
-        parents.clear()
-        all_parents.clear()
         item = stack.pop()
+
+        parent_list = [0] + get_all_parents(tree['children'], item['clone_id'])
 
         missense_counter = 0
         frameshift_counter = 0
@@ -64,19 +85,25 @@ def traverse_tree(tree, sample):
             if len(sub_df) > 0:
                 binders = len(sub_df)
                 gene = sub_df['gene'].values[0]
-                kDmt_min = sub_df.min(axis=0)['kDmt']
+                kdmt_min = sub_df.min(axis=0)['kDmt']
 
                 mutation_summary = pd.concat([mutation_summary, pd.DataFrame({"Sample": [sample], "Mutation_ID": [m],
-                                             "clone_id": item['clone_id'], "CCF_X": item['X'], "marginalCCF_x": item['x'],
-                                             "mutation_type": mut_type, "gene": gene, "n_neoantigen_binders": binders,
-                                             "best_kDmt": kDmt_min})],
+                                                                              "clone_id": item['clone_id'],
+                                                                              "CCF_X": item['X'],
+                                                                              "marginalCCF_x": item['x'],
+                                                                              "mutation_type": mut_type, "gene": gene,
+                                                                              "n_neoantigen_binders": binders,
+                                                                              "best_kDmt": kdmt_min})],
                                              ignore_index=True)
 
             else:
                 mutation_summary = pd.concat([mutation_summary, pd.DataFrame({"Sample": [sample], "Mutation_ID": [m],
-                                             "clone_id": item['clone_id'], "CCF_X": item['X'], "marginalCCF_x": item['x'],
-                                             "mutation_type": mut_type, "gene": None, "n_neoantigen_binders": 0,
-                                             "best_kDmt": 0})],
+                                                                              "clone_id": item['clone_id'],
+                                                                              "CCF_X": item['X'],
+                                                                              "marginalCCF_x": item['x'],
+                                                                              "mutation_type": mut_type, "gene": None,
+                                                                              "n_neoantigen_binders": 0,
+                                                                              "best_kDmt": 0})],
                                              ignore_index=True)
 
         clone_summary = pd.concat([clone_summary, pd.DataFrame({"Sample": [sample], "Clone_ID": [item['clone_id']],
@@ -84,13 +111,18 @@ def traverse_tree(tree, sample):
                                                                 "n_mutations": mutations_counter,
                                                                 "n_missense": missense_counter,
                                                                 "n_frameshift": frameshift_counter,
-                                                                "parent_clone_id": None, "all_parent_clones": None})],
-                                                                ignore_index=True)
+                                                                "parent_clone_id": parent_list[-2],
+                                                                "all_parent_clones": ','.join(str(x) for x in parent_list[:-1])})],
+                                  ignore_index=True)
 
         if 'children' in item:
             stack.extend(reversed(item['children']))
     return -1
 
+
+# for each patient, open respective phylogeny tree json file
+# save json tree in tree_dict with sample as key
+# pass tree and sample name into tree_summary function for data collection
 def tree_summary(path):
     os.chdir(path)
     print("entered")
@@ -105,6 +137,8 @@ def tree_summary(path):
             traverse_tree(x['sample_trees'][0]['topology'], x['id'])
             print("\n")
 
+
+# add total mutations and total non-synonymous mutations columns to patient summary file
 def total_cols():
     patient_summary.fillna(0, inplace=True)
 
@@ -123,6 +157,10 @@ def total_cols():
         col_list.remove(x)
     patient_summary['total_mutations'] = patient_summary[col_list].sum(axis=1)
 
+
+# for each patient, open respective neo antigen file and read into dataframe
+# save neo antigen dataframe in neoantigen_dict with sample as key
+# count binders and collect data to add to patient summary file
 def neoantigen_summary(path):
     for dirpath, dirname, filename in os.walk(path):
         for f in filename:
@@ -148,9 +186,13 @@ def neoantigen_summary(path):
                     if y in f:
                         neoantigen_dict[y] = data
                         i = patient_summary.index[patient_summary['Sample'] == y]
-                        patient_summary.loc[i,["n_unique_9mers", "n_binders_9mers", "n_weakBinders_9mer", "n_strongBinders_9mer"]] = [len(unique_9mers), len(unique_binders), weakbind_count, strongbind_count]
+                        patient_summary.loc[i, ["n_unique_9mers", "n_binders_9mers", "n_weakBinders_9mer",
+                                                "n_strongBinders_9mer"]] = [len(unique_9mers), len(unique_binders),
+                                                                            weakbind_count, strongbind_count]
     total_cols()
 
+
+# count unique mutations and feature types, add to patient summary file
 def count(sample):
     info_list = vcf_dict[sample]["ANN"]
     feature_type = []
@@ -170,46 +212,52 @@ def count(sample):
     for obj in unique_list:
         patient_summary.loc[patient_summary.index[patient_summary['Sample'] == sample], obj] = feature_type.count(obj)
 
+
+# read VCF files into pandas dataframe, store in vcf_dict with patient as key
 def read_vcf(filepath, sample):
     reader = vcf.Reader(open(filepath))
     df = pd.DataFrame([vars(r) for r in reader])
-    vcf_df = df.merge(pd.DataFrame(df.INFO.tolist()),
-                   left_index=True, right_index=True)
+    vcf_df = df.merge(pd.DataFrame(df.INFO.tolist()), left_index=True, right_index=True)
     vcf_dict[sample] = vcf_df
     count(sample)
 
-# within
+
+# within patient VCF folder, search for VCF files
 def search_dir(path, p):
     global patient_summary
     for dirpath, dirname, filename in os.walk(path):
         for f in filename:
             if f.endswith(vcf_suffix):
                 sample_name = f[:f.find(vcf_suffix)]
-                patient_summary = pd.concat([patient_summary, pd.DataFrame({"Patient": [p], "Sample": [sample_name]})], ignore_index=True)
+                patient_summary = pd.concat([patient_summary, pd.DataFrame({"Patient": [p], "Sample": [sample_name]})],
+                                            ignore_index=True)
                 read_vcf(os.path.join(path, f), sample_name)
 
-# given root directory, find VCF directory or specific patient directory
-def findpath(path, p):
+
+# given root directory, find VCF directory and loop through patient folders
+def findpath(path):
     os.chdir(path)
     if os.path.isdir("VCF"):
         os.chdir(path + "/VCF")
-        if p:
-            print("patient is given")
-            if os.path.isdir(p):
-                os.chdir(os.getcwd() + "/" + p)
-                search_dir(os.getcwd(), p)
-        else:
-            for sub_dir in os.listdir():
-                new_path = os.path.join(os.getcwd(), sub_dir)
-                search_dir(new_path, sub_dir)
+        for sub_dir in os.listdir():
+            new_path = os.path.join(os.getcwd(), sub_dir)
+            search_dir(new_path, sub_dir)
     else:
         return "VCF not found in directory"
 
-findpath(vcf_directory, patient)
+
+# call vcf function, neo antigen function, phylogeny tree function
+findpath(vcf_directory)
 neoantigen_summary(neoant_directory)
-print(patient_summary)
+tree_summary(tree_directory)
 
+# If User specified patient, update summary files to contain only patient-specific data
+if patient:
+    patient_summary = patient_summary[patient_summary['Patient'] == patient]
+    mutation_summary = mutation_summary[mutation_summary['Sample'].str.contains(patient)]
+    clone_summary = clone_summary[clone_summary['Sample'].str.contains(patient)]
 
-tree_summary(tree_path)
-mutation_summary.to_csv()
+# export summary files as .csv
 patient_summary.to_csv()
+mutation_summary.to_csv()
+clone_summary.to_csv()

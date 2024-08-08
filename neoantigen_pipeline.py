@@ -51,9 +51,9 @@ def get_all_parents(json_tree, target_id):
                         return [element['clone_id']] + check_child
 
 
-# traverse sample's phylogeny tree to collect mutation-specific and clone-specific data
+# search sample's phylogeny tree to collect mutation-specific and clone-specific data
 # add data to mutation and clone summary files
-def traverse_tree(tree, sample):
+def tree_data(tree, sample):
     global mutation_summary, clone_summary
     vcf_data = None
     neoantigen_data = None
@@ -148,59 +148,58 @@ def traverse_tree(tree, sample):
 
 # for each patient, open respective phylogeny tree json file
 # save json tree in tree_dict with sample as key
-# pass tree and sample name into tree_summary function for data collection
+# pass tree and sample name into tree_data function for data collection
+def traverse_tree(name):
+    tfile = "trees_" + name + ".json"
+    f = open(tfile)
+    data = json.load(f)
+
+    original_tree = data['time_points'][0]['samples']
+    for sub_tree in original_tree:
+        print(sub_tree['id'])
+        tree_dict[sub_tree['id']] = sub_tree['sample_trees'][0]['topology']
+        tree_data(sub_tree['sample_trees'][0]['topology'], sub_tree['id'])
+        print("\n")
+
+
+# select patient tree and pass into traverse_tree function for sub_tree traversal
 def tree_summary(path):
     os.chdir(path)
     print("entered")
     if patient:
-        tfile = "trees_" + patient + ".json"
-        f = open(tfile)
-        data = json.load(f)
-        original_tree = data['time_points'][0]['samples']
-        for x in original_tree:
-            print(x['id'])
-            tree_dict[x['id']] = x['sample_trees'][0]['topology']
-            traverse_tree(x['sample_trees'][0]['topology'], x['id'])
-            print("\n")
+        traverse_tree(patient)
     else:
         for p_name in patient_summary.Patient.unique():
-            tfile = "trees_" + p_name + ".json"
-            f = open(tfile)
-            data = json.load(f)
-            original_tree = data['time_points'][0]['samples']
-            for x in original_tree:
-                print(x['id'])
-                tree_dict[x['id']] = x['sample_trees'][0]['topology']
-                traverse_tree(x['sample_trees'][0]['topology'], x['id'])
-                print("\n")
+            traverse_tree(p_name)
 
 
 # add total mutations and total non-synonymous mutations columns to patient summary file
 def total_cols():
     patient_summary.fillna(0, inplace=True)
 
-    col_list = list(patient_summary)
+    columns_list = list(patient_summary)
     col_list_non_syn = []
 
     non_syn = ["splice", "missense_variant", "frameshift_variant", "stop_gained", "start_lost", "stop_lost",
                "disruptive_inframe_deletion", "disruptive_inframe_insertion"]
-    for x in col_list:
-        if x.startswith(tuple(non_syn)):
-            col_list_non_syn.append(x)
+    for col in columns_list:
+        if col.startswith(tuple(non_syn)):
+            col_list_non_syn.append(col)
     patient_summary['non_syn_mutations'] = patient_summary[col_list_non_syn].sum(axis=1)
 
     columns_to_remove = ['Patient', 'Sample']
-    for x in columns_to_remove:
-        col_list.remove(x)
+    for col in columns_to_remove:
+        columns_list_list.remove(col)
     patient_summary['total_mutations'] = patient_summary[col_list].sum(axis=1)
+
 
 # save neo antigen dataframe in neoantigen_dict with sample as key
 # count binders and collect data to add to patient summary file
 def neoantigen_data(data, nf_filename):
     unique_9mers = []
     unique_binders = []
-    weakbind_count = 0
-    strongbind_count = 0
+    patient_weakBinders = 0
+    patient_strongBinders = 0
 
     for index, row in data.iterrows():
         if row['peptideMT'] not in unique_9mers:
@@ -209,9 +208,9 @@ def neoantigen_data(data, nf_filename):
             unique_binders.append(row['neoantigen'])
         if row['kDmt'] < 500:
             if row['kDmt'] > 50:
-                weakbind_count += 1
+                patient_weakBinders += 1
             else:
-                strongbind_count += 1
+                patient_strongBinders += 1
 
     for y in patient_summary['Sample']:
         if y in nf_filename:
@@ -219,7 +218,8 @@ def neoantigen_data(data, nf_filename):
             i = patient_summary.index[patient_summary['Sample'] == y]
             patient_summary.loc[i, ["n_unique_9mers", "n_neoantigen_binders", "n_weakBinders",
                                     "n_strongBinders"]] = [len(unique_9mers), len(unique_binders),
-                                                                weakbind_count, strongbind_count]
+                                                                patient_weakBinders, patient_strongBinders]
+
 
 # for each patient, open respective neo antigen file and read into dataframe
 def neoantigen_summary(path):
@@ -234,6 +234,7 @@ def neoantigen_summary(path):
                     data = pd.read_csv(os.path.join(path, f), sep='\t', header=0)
                     neoantigen_data(data, f)
     total_cols()
+
 
 # count unique mutations and feature types, add to patient summary file
 def count(sample):

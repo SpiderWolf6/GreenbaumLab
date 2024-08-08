@@ -299,7 +299,7 @@ findpath(vcf_directory)
 neoantigen_summary(neoant_directory)
 tree_summary(tree_directory)
 
-# If User specified patient, check that summary files only contain patient-specific data
+# If User specified patient, double check that output files ONLY contain patient-specific data
 if patient:
     patient_summary = patient_summary[patient_summary['Patient'] == patient]
     mutation_summary = mutation_summary[mutation_summary['Sample'].str.contains(patient)]
@@ -307,7 +307,7 @@ if patient:
 
 mutation_summary['best_kDmt'].replace(0, np.nan, inplace=True)
 
+# export summary files as .csv
 mutation_summary.to_csv()
 clone_summary.to_csv()
 patient_summary.to_csv()
-# export summary files as .csv

@@ -312,8 +312,4 @@ mutation_summary.to_csv()
 clone_summary.to_csv()
 patient_summary.to_csv()
 
-<<<<<<< HEAD
 print("end")
-=======
-print("end")
->>>>>>> c3cd9bdae940b3730ad8cd2a56c53ff0d8c1a338

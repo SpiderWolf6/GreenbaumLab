@@ -512,6 +512,7 @@ def findpath(path):
         return "VCF not found in directory"
 
 
+print("start")
 # call vcf function, neo antigen function, phylogeny tree function
 findpath(vcf_directory)
 neoantigen_summary(neoant_directory)
@@ -533,8 +534,8 @@ nested_data()
 start_graph()
 
 # export summary files as .csv
-patient_summary.to_csv("C:/goutam/soham/MSKCC/summer_2024/081624_patient_summary.csv")
-clone_summary.to_csv("C:/goutam/soham/MSKCC/summer_2024/081624_clone_summary.csv")
-mutation_summary.to_csv("C:/goutam/soham/MSKCC/summer_2024/081624_mutation_summary.csv")
+patient_summary.to_csv()
+clone_summary.to_csv()
+mutation_summary.to_csv()
 
 print("end")

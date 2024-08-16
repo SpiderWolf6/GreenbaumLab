@@ -2,14 +2,24 @@ import io
 import os
 import sys
 import time
-
-import pandas as pd
-import vcf
-import vcf.parser
+import math
 import argparse
 import requests
 import json
+import vcf
+import vcf.parser
+
+import pandas as pd
 import numpy as np
+import seaborn as sns
+import matplotlib as plt
+from matplotlib.backends.backend_pdf import PdfPages
+import networkx as nx
+from adjustText import adjust_text
+
+# for seaborn plots, change size of canvas and create color palette
+sns.set_theme(rc={'figure.figsize': (11.7, 8.27)})
+color_palette = sns.color_palette("hls", 9)
 
 # initialize user input parser and arguments
 parser = argparse.ArgumentParser(description='Foo')
@@ -37,6 +47,218 @@ vcf_dict = {}
 neoantigen_dict = {}
 tree_dict = {}
 
+# graph_df object for storing temporary dataframes used in plotting graphs and drawing trees
+graph_df = None
+
+
+# insert value(s) into dataframe column(s)
+def insert_value(df, index, cols, vals):
+    for i in range(0, len(cols)):
+        df.loc[index, cols[i]] = vals[i]
+
+
+# return subset of df where column matches value
+def filter_df_by_value(df, col, val, check_substring):
+    if check_substring:
+        return df[df[col].str.contains(val)]
+    else:
+        return df[df[col] == val]
+
+
+# replace occurrence of value with new value in dataframe column
+def replace_in_col(col, val, new_val):
+    col.replace(val, new_val, inplace=True)
+
+
+# splice given string based on specific start and end points
+def splice(string):
+    start = string.find("|") + 1
+    end = string[start:].find("|") + start
+    return string[start:end]
+
+
+# create pdf object, and lists of axes to plot and adjust for graphs
+pp = None
+adjust_cols_in_graph = ['n_frameshift_nested', 'n_strongBinders_nested']
+values_to_plot = ['n_mutations_nested', 'n_missense_nested', 'n_frameshift_nested', 'n_binders_nested',
+                  'n_weakBinders_nested', 'n_strongBinders_nested', 'n_summedBinders_nested', 'best_quality_nested',
+                  'best_kDmt_nested']
+
+
+# draw phylogeny tree
+def draw_tree(nx_graph):
+    fig, axes = plt.subplots(1, 1, dpi=72)
+    hierarchy = {}
+    nx.draw(nx_graph, node_color=color_palette, pos=nx.spring_layout(nx_graph), ax=axes, with_labels=True)
+    print("done")
+    plt.show()
+
+
+# create graph object and add edges between parent and child nodes
+def start_tree():
+    G = nx.Graph()
+    for index, row in graph_df.iterrows():
+        if row['parent_clone_id'] != 0:
+            G.add_edge(row['parent_clone_id'], row['Clone_ID'])
+    draw_graph(G)
+
+
+# return integer range of numbers between min and max values in column
+def integer_axis(a):
+    return range(math.floor(min(graph_df[a])), math.ceil(max(graph_df[a]) + 1))
+
+
+# save graph to pdf page
+def save_to_pdf():
+    pp.savefig(plt.gcf())
+    plt.clf()
+
+
+# label clone points on the graph
+def label_point(x_col, y_col, label, ax):
+    a = pd.concat({'x': x_col, 'y': y_col, 'label': label}, axis=1)
+    texts = []
+    for i, point in a.iterrows():
+        texts.append(ax.text(point['x'], point['y'], int(point['label'])))
+    adjust_text(texts, only_move={'points': 'y', 'texts': 'y'}, arrowprops=dict(arrowstyle="->", color='r', lw=0.5))
+    save_to_pdf()
+
+
+# draw line between parent and child point
+def draw_line(c1, c2, x_axis, y_axis):
+    x = []
+    y = []
+    new_df = graph_df[graph_df['Clone_ID'] == int(c1)]
+    x.append(new_df[x_axis].iloc[0])
+    y.append(new_df[y_axis].iloc[0])
+    new_df = graph_df[graph_df['Clone_ID'] == int(c2)]
+    x.append(new_df[x_axis].iloc[0])
+    y.append(new_df[y_axis].iloc[0])
+    plt.plot(x, y, color="b")
+
+
+# graph using seaborn
+def graph(x_axis, y_axis, var, sample):
+    graph_df[x_axis] = [x for x in graph_df[x_axis] if x != 'nan']
+    graph_df[y_axis] = [y for y in graph_df[y_axis] if y != 'nan']
+
+    plot = sns.scatterplot(data=graph_df, x=x_axis, y=y_axis, hue=var, legend=False)
+    plot.set_title(sample)
+
+    for index, row in graph_df.iterrows():
+        if row['parent_clone_id'] != 0:
+            draw_line(row['parent_clone_id'], row['Clone_ID'], x_axis, y_axis)
+    label_point(graph_df[x_axis], graph_df[y_axis], graph_df['Clone_ID'], plt.gca())
+
+
+# plot vertical graph using CCF_X as the y-axis
+def vertical_graph(sample):
+    x_axis_list = values_to_plot
+    y_axis = 'CCF_X'
+    for x_axis in x_axis_list:
+        print(x_axis)
+        if x_axis in adjust_cols_in_graph:
+            x_ticks = integer_axis(x_axis)
+            plt.xticks(x_ticks)
+        graph(x_axis, y_axis, 'Clone_ID', sample)
+
+
+# plot horizontal graph using clonal level as the x-axis
+def horizontal_graph(sample):
+    x_axis = 'clonal_level'
+    y_axis_list = values_to_plot
+    for y_axis in y_axis_list:
+        print(y_axis)
+        x_ticks = integer_axis(x_axis)
+        plt.xticks(x_ticks)
+        if y_axis in adjust_cols_in_graph:
+            y_ticks = integer_axis(y_axis)
+            plt.yticks(y_ticks)
+        graph(x_axis, y_axis, 'Clone_ID', sample)
+
+
+# for each patient -- for each sample, create pdf object and plot graph
+def start_graph():
+    global clone_summary, graph_df, pp
+    for patient in patient_df['Patient'].unique():
+        print(patient)
+        pp = PdfPages(patient + '_figures.pdf')
+        for sample in clone_df['Sample'].unique():
+            if patient in sample:
+                print(sample)
+                graph_df = clone_df[clone_df['Sample'] == sample]
+                start_tree()
+                vertical_graph(sample)
+                print("pause")
+                horizontal_graph(sample)
+        pp.close()
+
+
+# for clone_summary file, add nested data columns for each clone
+# important step for graphing clone data
+def nested_data():
+    global clone_summary
+    clone_summary.best_quality.fillna(value=0, inplace=True)
+    clone_summary.best_kDmt.fillna(value=100000, inplace=True)
+
+    nested_cols = ['n_mutations_nested', 'n_missense_nested', 'n_frameshift_nested',
+                                'n_binders_nested', 'n_weakBinders_nested', 'n_strongBinders_nested',
+                                'n_summedBinders_nested', 'best_quality_nested',
+                                'best_kDmt_nested', 'clonal_level']
+
+    for index, row in clone_summary.iterrows():
+        if row['parent_clone_id'] == 0:
+            self_vals = [row['n_mutations'], row['n_missense'], row['n_frameshift'], row['n_neoantigen_binders'],
+                         row['n_weakBinders'], row['n_strongBinders'], row['n_summedBinders'], row['best_quality'],
+                         np.nan, 0]
+            insert_value(clone_summary, index, nested_cols, self_vals)
+        else:
+            current_sample = row['Sample']
+            parents = row['all_parent_clones'].split(",")[1:] + [str(row['Clone_ID'])]
+
+            clonal_level = len(parents) - 1
+            mutations_nested = 0
+            missense_nested = 0
+            frameshift_nested = 0
+            binders_nested = 0
+            weakBinders_nested = 0
+            strongBinders_nested = 0
+            quality_nested = 0
+            kDmt_nested = 0
+
+            for p in parents:
+                temp_df = (clone_summary.loc[(clone_summary['Sample'] == current_sample) & (clone_summary['Clone_ID'] == int(p))]).iloc[0]
+
+                mutations_nested += temp_df['n_mutations']
+                missense_nested += temp_df['n_missense']
+                frameshift_nested += temp_df['n_frameshift']
+                binders_nested += temp_df['n_neoantigen_binders']
+                weakBinders_nested += temp_df['n_weakBinders']
+                strongBinders_nested += temp_df['n_strongBinders']
+
+                if temp_df['best_quality']:
+                    if ((temp_df['best_quality'] > quality_nested) | (quality_nested == 0)):
+                        quality_nested = temp_df['best_quality']
+                else:
+                    quality_nested += 0
+                if temp_df['best_kDmt']:
+                    if ((temp_df['best_kDmt'] < kDmt_nested) | (kDmt_nested == 0)):
+                        kDmt_nested = temp_df['best_kDmt']
+                else:
+                    kDmt_nested += 0
+
+            nested_vals = [mutations_nested, missense_nested, frameshift_nested, binders_nested,
+                           weakBinders_nested, strongBinders_nested, weakBinders_nested+strongBinders_nested,
+                           quality_nested, kDmt_nested, clonal_level]
+            insert_value(clone_summary, index, nested_cols, nested_vals)
+
+    adjust_cols_in_clone = ['best_quality', 'best_kDmt', 'best_quality_nested', 'best_kDmt_nested']
+    original_values = [0, 100000, 0, 100000]
+
+    for i in range(0, len(adjust_cols_in_clone)):
+        replace_in_col(clone_summary[adjust_cols_in_clone[i]], original_values[i], np.nan)
+    clone_summary['n_summedBinders_nested'].replace(np.nan, 0, inplace=True)
+
 
 # returns the path from root node to target node
 def get_all_parents(json_tree, target_id):
@@ -56,11 +278,11 @@ def get_all_parents(json_tree, target_id):
 def tree_data(tree, sample):
     global mutation_summary, clone_summary
     vcf_data = None
-    neoantigen_data = None
+    neoantigen_sub_df = None
     for key in vcf_dict:
         if key in sample:
             vcf_data = vcf_dict[key]
-            neoantigen_data = neoantigen_dict[key]
+            neoantigen_sub_df = neoantigen_dict[key]
 
     stack = tree['children'][:]
     while stack:
@@ -77,17 +299,14 @@ def tree_data(tree, sample):
 
         for mutation_id in item["clone_mutations"]:
             mutations_counter += 1
-            mutation_type = (vcf_data.loc[vcf_data.index[vcf_data['ID'] == mutation_id], 'ANN'].iloc[0])[0]
-            start = mutation_type.find("|") + 1
-            end = mutation_type[start:].find("|") + start
-            mutation_type = mutation_type[start:end]
+            mutation_type = splice((vcf_data.loc[vcf_data.index[vcf_data['ID'] == mutation_id], 'ANN'].iloc[0])[0])
 
             if mutation_type.startswith("missense"):
                 missense_counter += 1
             if mutation_type.startswith("frameshift"):
                 frameshift_counter += 1
 
-            sub_mutation_df = neoantigen_data[neoantigen_data['neoantigen'].str.startswith(mutation_id)]
+            sub_mutation_df = neoantigen_sub_df[neoantigen_sub_df['neoantigen'].str.startswith(mutation_id)]
             if len(sub_mutation_df) > 0:
                 binders = len(sub_mutation_df)
                 gene = sub_mutation_df['gene'].values[0]
@@ -122,7 +341,7 @@ def tree_data(tree, sample):
                                                                               "n_strongBinders": 0})],
                                              ignore_index=True)
 
-        sub_clonal_df = neoantigen_data[neoantigen_data['clone_number'] == item['clone_id']]
+        sub_clonal_df = filter_df_by_value(neoantigen_sub_df, 'clone_number', item['clone_id'], False)
         quality = sub_clonal_df.max(axis=0)['quality']
         fitness = sub_clonal_df.min(axis=0)['clone_fitness']
         clone_kDmt = sub_clonal_df.min(axis=0)['kDmt']
@@ -136,6 +355,7 @@ def tree_data(tree, sample):
                                                                 "n_neoantigen_binders": clone_neoantigens,
                                                                 "n_weakBinders": clone_weakBinders,
                                                                 "n_strongBinders": clone_strongBinders,
+                                                                "n_summedBinders": clone_weakBinders+clone_strongBinders,
                                                                 "clone_fitness": fitness,
                                                                 "best_quality": quality,
                                                                 "best_kDmt": clone_kDmt})],
@@ -189,8 +409,8 @@ def total_cols():
 
     columns_to_remove = ['Patient', 'Sample']
     for col in columns_to_remove:
-        columns_list_list.remove(col)
-    patient_summary['total_mutations'] = patient_summary[col_list].sum(axis=1)
+        columns_list.remove(col)
+    patient_summary['total_mutations'] = patient_summary[columns_list].sum(axis=1)
 
 
 # save neo antigen dataframe in neoantigen_dict with sample as key
@@ -215,10 +435,10 @@ def neoantigen_data(data, nf_filename):
     for y in patient_summary['Sample']:
         if y in nf_filename:
             neoantigen_dict[y] = data
-            i = patient_summary.index[patient_summary['Sample'] == y]
-            patient_summary.loc[i, ["n_unique_9mers", "n_neoantigen_binders", "n_weakBinders",
-                                    "n_strongBinders"]] = [len(unique_9mers), len(unique_binders),
-                                                                patient_weakBinders, patient_strongBinders]
+            index = patient_summary.index[patient_summary['Sample'] == y]
+            nf_cols = ["n_unique_9mers", "n_neoantigen_binders", "n_weakBinders", "n_strongBinders"]
+            nf_vals = [len(unique_9mers), len(unique_binders), patient_weakBinders, patient_strongBinders]
+            insert_value(patient_summary, index, nf_cols, nf_vals)
 
 
 # for each patient, open respective neo antigen file and read into dataframe
@@ -239,22 +459,20 @@ def neoantigen_summary(path):
 # count unique mutations and feature types, add to patient summary file
 def count(sample):
     info_list = vcf_dict[sample]["ANN"]
-    feature_type = []
 
+    feature_type = []
     for row in info_list:
-        row = row[0]
-        start = row.find("|") + 1
-        end = row[start:].find("|") + start
-        feature_type.append(row[start:end])
+        first_element = row[0]
+        feature_type.append(splice(first_element))
 
     unique_list = []
+    for mutation_type in feature_type:
+        if mutation_type not in unique_list:
+            unique_list.append(mutation_type)
 
-    for obj in feature_type:
-        if obj not in unique_list:
-            unique_list.append(obj)
-
-    for obj in unique_list:
-        patient_summary.loc[patient_summary.index[patient_summary['Sample'] == sample], obj] = feature_type.count(obj)
+    for unique_mutation in unique_list:
+        index = patient_summary.index[patient_summary['Sample'] == sample]
+        insert_value(patient_summary, index, [unique_mutation], [feature_type.count(unique_mutation)])
 
 
 # read VCF files into pandas dataframe, store in vcf_dict with patient as key
@@ -301,15 +519,22 @@ tree_summary(tree_directory)
 
 # If User specified patient, double check that output files ONLY contain patient-specific data
 if patient:
-    patient_summary = patient_summary[patient_summary['Patient'] == patient]
-    mutation_summary = mutation_summary[mutation_summary['Sample'].str.contains(patient)]
-    clone_summary = clone_summary[clone_summary['Sample'].str.contains(patient)]
+    patient_summary = filter_df_by_value(patient_summary, 'Patient', patient, False)
+    mutation_summary = filter_df_by_value(mutation_summary, 'Sample', patient, True)
+    clone_summary = filter_df_by_value(clone_summary, 'Sample', patient, True)
 
-mutation_summary['best_kDmt'].replace(0, np.nan, inplace=True)
+# replace 0 values with N/A in best_kDmt column
+replace_in_col(mutation_summary['best_kDmt'], 0, np.nan)
+
+# call function to add nested columns to clone_summary file
+nested_data()
+
+# call graph function to draw seaborn plots and phylogeny tree
+start_graph()
 
 # export summary files as .csv
-mutation_summary.to_csv()
-clone_summary.to_csv()
-patient_summary.to_csv()
+patient_summary.to_csv("C:/goutam/soham/MSKCC/summer_2024/081624_patient_summary.csv")
+clone_summary.to_csv("C:/goutam/soham/MSKCC/summer_2024/081624_clone_summary.csv")
+mutation_summary.to_csv("C:/goutam/soham/MSKCC/summer_2024/081624_mutation_summary.csv")
 
 print("end")

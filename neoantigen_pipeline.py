@@ -7,19 +7,26 @@ import argparse
 import requests
 import json
 import vcf
-import vcf.parser
 
 import pandas as pd
 import numpy as np
 import seaborn as sns
-import matplotlib as plt
+import matplotlib.pyplot as plt
+import matplotlib.colors
 from matplotlib.backends.backend_pdf import PdfPages
 import networkx as nx
+from networkx.drawing.nx_pydot import graphviz_layout
 from adjustText import adjust_text
 
-# for seaborn plots, change size of canvas and create color palette
+# for seaborn plots, change size of canvas and create color palette object
 sns.set_theme(rc={'figure.figsize': (11.7, 8.27)})
-color_palette = sns.color_palette("hls", 9)
+color_palette = None
+
+
+# required installations
+# pip install graphviz
+# pip install pydot
+os.environ["PATH"] += r"C:\goutam\soham\Python\Graphviz\bin" # local path to Graphviz/bin
 
 # initialize user input parser and arguments
 parser = argparse.ArgumentParser(description='Foo')
@@ -50,6 +57,9 @@ tree_dict = {}
 # graph_df object for storing temporary dataframes used in plotting graphs and drawing trees
 graph_df = None
 
+# output folder
+output_path = "C:/goutam/soham/MSKCC/summer_2024/"
+
 
 # insert value(s) into dataframe column(s)
 def insert_value(df, index, cols, vals):
@@ -77,30 +87,12 @@ def splice(string):
     return string[start:end]
 
 
-# create pdf object, and lists of axes to plot and adjust for graphs
+# create pdf object, and the axes that will need to plotted and adjusted for graphs
 pp = None
 adjust_cols_in_graph = ['n_frameshift_nested', 'n_strongBinders_nested']
 values_to_plot = ['n_mutations_nested', 'n_missense_nested', 'n_frameshift_nested', 'n_binders_nested',
                   'n_weakBinders_nested', 'n_strongBinders_nested', 'n_summedBinders_nested', 'best_quality_nested',
                   'best_kDmt_nested']
-
-
-# draw phylogeny tree
-def draw_tree(nx_graph):
-    fig, axes = plt.subplots(1, 1, dpi=72)
-    hierarchy = {}
-    nx.draw(nx_graph, node_color=color_palette, pos=nx.spring_layout(nx_graph), ax=axes, with_labels=True)
-    print("done")
-    plt.show()
-
-
-# create graph object and add edges between parent and child nodes
-def start_tree():
-    G = nx.Graph()
-    for index, row in graph_df.iterrows():
-        if row['parent_clone_id'] != 0:
-            G.add_edge(row['parent_clone_id'], row['Clone_ID'])
-    draw_graph(G)
 
 
 # return integer range of numbers between min and max values in column
@@ -110,8 +102,40 @@ def integer_axis(a):
 
 # save graph to pdf page
 def save_to_pdf():
+    print("entered save_to_pdf")
     pp.savefig(plt.gcf())
     plt.clf()
+
+
+def draw_graph(nx_graph):
+    fig, axes = plt.subplots(1,1,dpi=72)
+    pos = graphviz_layout(nx_graph, prog="dot")
+    nx.draw(nx_graph, pos, node_color=color_palette, ax=axes, with_labels=True)
+    print("tree done")
+    save_to_pdf()
+
+
+def add_nodes(n, e, c):
+    for index, row in graph_df.iterrows():
+        n += [row['Clone_ID']]
+        c += [float(row['CCF_X'])]
+        if row['parent_clone_id'] != 0:
+            e += [(row['parent_clone_id'], row['Clone_ID'])]
+    return n, e, c
+
+
+def draw_tree():
+    global color_palette
+    nodes = []
+    edges = []
+    color_gradient = []
+    G = nx.Graph()
+    nodes, edges, color_gradient = add_nodes(nodes, edges, color_gradient)
+    G.add_nodes_from(nodes)
+    G.add_edges_from(edges)
+    cmap = matplotlib.colors.LinearSegmentedColormap.from_list("", ["yellow", "orange", "crimson"])
+    color_palette = [cmap(float(c/1.0)) for c in color_gradient]
+    draw_graph(G)
 
 
 # label clone points on the graph
@@ -180,18 +204,17 @@ def horizontal_graph(sample):
 # for each patient -- for each sample, create pdf object and plot graph
 def start_graph():
     global clone_summary, graph_df, pp
-    for patient in patient_df['Patient'].unique():
-        print(patient)
-        pp = PdfPages(patient + '_figures.pdf')
-        for sample in clone_df['Sample'].unique():
-            if patient in sample:
+    for p in patient_summary['Patient'].unique():
+        print(p)
+        for sample in clone_summary['Sample'].unique():
+            if p in sample:
+                pp = PdfPages(output_path + sample + '_figures.pdf')
                 print(sample)
-                graph_df = clone_df[clone_df['Sample'] == sample]
-                start_tree()
+                graph_df = clone_summary[clone_summary['Sample'] == sample]
+                draw_tree()
                 vertical_graph(sample)
-                print("pause")
                 horizontal_graph(sample)
-        pp.close()
+                pp.close()
 
 
 # for clone_summary file, add nested data columns for each clone
@@ -310,7 +333,7 @@ def tree_data(tree, sample):
             if len(sub_mutation_df) > 0:
                 binders = len(sub_mutation_df)
                 gene = sub_mutation_df['gene'].values[0]
-                mutation_kDmt = sub_mutation_df.min(axis=0)['kDmt']
+                mutation_kdmt = sub_mutation_df.min(axis=0)['kDmt']
                 mutation_strongBinders = len(sub_mutation_df[sub_mutation_df["kDmt"] < 50])
                 mutation_weakBinders = len(sub_mutation_df[(sub_mutation_df["kDmt"] < 500)]) - mutation_strongBinders
 
@@ -324,7 +347,7 @@ def tree_data(tree, sample):
                                                                               "marginalCCF_x": item['x'],
                                                                               "mutation_type": mutation_type, "gene": gene,
                                                                               "n_neoantigen_binders": binders,
-                                                                              "best_kDmt": mutation_kDmt,
+                                                                              "best_kDmt": mutation_kdmt,
                                                                               "n_weakBinders": mutation_weakBinders,
                                                                               "n_strongBinders": mutation_strongBinders})],
                                              ignore_index=True)
@@ -344,7 +367,7 @@ def tree_data(tree, sample):
         sub_clonal_df = filter_df_by_value(neoantigen_sub_df, 'clone_number', item['clone_id'], False)
         quality = sub_clonal_df.max(axis=0)['quality']
         fitness = sub_clonal_df.min(axis=0)['clone_fitness']
-        clone_kDmt = sub_clonal_df.min(axis=0)['kDmt']
+        clone_kdmt = sub_clonal_df.min(axis=0)['kDmt']
         clone_summary = pd.concat([clone_summary, pd.DataFrame({"Sample": [sample], "Clone_ID": [item['clone_id']],
                                                                 "CCF_X": item['X'], "marginalCCF_x": item['x'],
                                                                 "n_mutations": mutations_counter,
@@ -358,7 +381,7 @@ def tree_data(tree, sample):
                                                                 "n_summedBinders": clone_weakBinders+clone_strongBinders,
                                                                 "clone_fitness": fitness,
                                                                 "best_quality": quality,
-                                                                "best_kDmt": clone_kDmt})],
+                                                                "best_kDmt": clone_kdmt})],
                                   ignore_index=True)
 
         if 'children' in item:
@@ -534,8 +557,8 @@ nested_data()
 start_graph()
 
 # export summary files as .csv
-patient_summary.to_csv()
-clone_summary.to_csv()
-mutation_summary.to_csv()
+patient_summary.to_csv(output_path + "082224_patient_summary.csv")
+clone_summary.to_csv(output_path + "082224_clone_summary.csv")
+mutation_summary.to_csv(output_path + "082224_mutation_summary.csv")
 
 print("end")

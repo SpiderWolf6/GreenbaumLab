@@ -20,7 +20,7 @@ from functools import wraps
 sns.set_theme(rc={'figure.figsize': (11.7, 8.27)})
 color_palette = None
 
-os.environ["PATH"] += r"C:\goutam\soham\Python\Graphviz\bin" # local path to Graphviz/bin
+os.environ["PATH"] += r"" # local path to Graphviz/bin
 
 # create vcf, neoantigen, and tree dictionaries to organize individual datasets
 vcf_dict = {}

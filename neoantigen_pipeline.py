@@ -2,7 +2,7 @@ import pandas as pd
 import requests, argparse
 from functions import *
 
-os.environ["PATH"] += r"C:\goutam\soham\Python\Graphviz\bin" # local path to Graphviz/bin
+os.environ["PATH"] += r"" # local path to Graphviz/bin
 
 # initialize user input parser and arguments
 parser = argparse.ArgumentParser(description='Foo')
@@ -74,9 +74,9 @@ def main():
     print(graph_return_statement)
 
     # export summary files as .csv
-    patient_summary.to_csv(output_path + "/082224_patient_summary.csv")
-    clone_summary.to_csv(output_path + "/082224_clone_summary.csv")
-    mutation_summary.to_csv(output_path + "/082224_mutation_summary.csv")
+    patient_summary.to_csv(output_path + "/100124_patient_summary.csv")
+    clone_summary.to_csv(output_path + "/100124_clone_summary.csv")
+    mutation_summary.to_csv(output_path + "/100124_mutation_summary.csv")
 
     print("end")
 
